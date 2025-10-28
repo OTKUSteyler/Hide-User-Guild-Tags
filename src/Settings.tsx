@@ -1,44 +1,74 @@
-import { Forms } from "@vendetta/ui";
-import { storage } from "@vendetta/storage";
-import { getAssetId } from "@vendetta/ui/assets";
+import { React, ReactNative as RN } from "@vendetta/metro/common";
+import { useProxy } from "@vendetta/storage";
+import { storage } from "@vendetta/plugin";
+import { getAssetIDByName } from "@vendetta/ui/assets";
+import { Forms } from "@vendetta/ui/components";
 
-const { Form, FormSection, FormRow, FormInput, FormDivider } = Forms;
+const { FormRow, FormSection, FormInput } = Forms;
 
-export default function Settings() {
-  const [input, setInput] = React.useState("");
+interface PluginStorage {
+  whitelist?: string[];
+}
 
-  const add = () => {
-    const id = input.trim();
-    if (!id) return;
-    const list = storage.whitelist ?? [];
-    if (!list.includes(id)) {
-      storage.whitelist = [...list, id];
+export default () => {
+  useProxy(storage);
+  const pluginStorage = storage as PluginStorage;
+
+  if (!pluginStorage.whitelist) {
+    pluginStorage.whitelist = [];
+  }
+
+  const [userId, setUserId] = React.useState("");
+
+  const addUser = () => {
+    if (!userId.trim()) return;
+    
+    if (!pluginStorage.whitelist.includes(userId.trim())) {
+      pluginStorage.whitelist.push(userId.trim());
+      setUserId("");
     }
-    setInput("");
   };
 
-  const remove = (id: string) => {
-    storage.whitelist = (storage.whitelist ?? []).filter(x => x !== id);
+  const removeUser = (id: string) => {
+    pluginStorage.whitelist = pluginStorage.whitelist.filter(u => u !== id);
   };
 
   return (
-    <Form>
-      <FormSection title="Whitelist User IDs (keep tag)">
+    <RN.ScrollView style={{ flex: 1 }}>
+      <FormSection title="Whitelist Users">
         <FormRow
-          label="Add ID"
-          trailing={<FormInput placeholder="123456789012345678" value={input} onChange={setInput} />}
-          onPress={add}
+          label="Add User ID"
+          subLabel="Enter user ID to whitelist (show their guild tags)"
+          trailing={
+            <RN.TouchableOpacity onPress={addUser}>
+              <RN.Text style={{ color: "#5865F2" }}>Add</RN.Text>
+            </RN.TouchableOpacity>
+          }
         />
-        <FormDivider />
-        {(storage.whitelist ?? []).map(id => (
-          <FormRow
-            key={id}
-            label={id}
-            trailing={<Forms.FormIcon source={getAssetId("ic_close")} />}
-            onPress={() => remove(id)}
-          />
-        ))}
+        <FormInput
+          value={userId}
+          onChange={setUserId}
+          placeholder="User ID"
+        />
       </FormSection>
-    </Form>
+
+      <FormSection title="Whitelisted Users">
+        {pluginStorage.whitelist.length === 0 ? (
+          <FormRow label="No users whitelisted" />
+        ) : (
+          pluginStorage.whitelist.map((id) => (
+            <FormRow
+              key={id}
+              label={id}
+              trailing={
+                <RN.TouchableOpacity onPress={() => removeUser(id)}>
+                  <RN.Text style={{ color: "#ED4245" }}>Remove</RN.Text>
+                </RN.TouchableOpacity>
+              }
+            />
+          ))
+        )}
+      </FormSection>
+    </RN.ScrollView>
   );
-}
+};
