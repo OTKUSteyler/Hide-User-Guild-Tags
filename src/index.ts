@@ -1,46 +1,39 @@
 /**
- *  HideUserGuildTags – Revenge template
- *  -------------------------------------------------
- *  • Uses @revenge/patcher  → patch(component, name, fn)
- *  • Uses @revenge/metro    → findByProps / findByName
- *  • Uses @revenge/storage  → persistent storage
- *  -------------------------------------------------
+ *  Hide User Guild Tags – Vendetta
+ *  Uses: @vendetta/patcher.after
  */
 
-import { patch } from "@revenge/patcher";
-import { findByProps } from "@revenge/metro";
-import { storage } from "@revenge/storage";
+import { after } from "@vendetta/patcher";
+import { findByProps } from "@vendetta/metro";
+import { storage } from "@vendetta/storage";
 import Settings from "./Settings";
 
+let patches: (() => void)[] = [];
+
 /* --------------------------------------------------------------- */
-/*  Storage – whitelist of user IDs that KEEP the guild tag        */
+/*  Storage – whitelist of user IDs that KEEP the tag              */
 /* --------------------------------------------------------------- */
 storage.whitelist ??= [];
 
 /* --------------------------------------------------------------- */
-/*  Helper – should we hide the tag for this user?                 */
+/*  Helper – should we hide?                                       */
 /* --------------------------------------------------------------- */
-function shouldHide(userId?: string): boolean {
+const shouldHide = (userId?: string): boolean => {
   const list: string[] = storage.whitelist ?? [];
   return userId ? !list.includes(userId) : true;
-}
+};
 
 /* --------------------------------------------------------------- */
-/*  Patch array – collect unpatch functions for clean unload       */
-/* --------------------------------------------------------------- */
-let patches: (() => void)[] = [];
-
-/* --------------------------------------------------------------- */
-/*  onLoad – find components & apply patches                       */
+/*  onLoad – find components and patch                             */
 /* --------------------------------------------------------------- */
 export const onLoad = () => {
   try {
-    /* ---------- 1. GuildTag badge (the little icon) ---------- */
-    const GuildTagMod = findByProps("GuildTag");
-    if (GuildTagMod?.GuildTag) {
-      const unpatch = patch(GuildTagMod, "GuildTag", (args, res) => {
+    /* --------------------- 1. GuildTag badge --------------------- */
+    const GuildTagModule = findByProps("GuildTag");
+    if (GuildTagModule?.GuildTag) {
+      const unpatch = after("GuildTag", GuildTagModule, (args, res) => {
         const user = args?.[0]?.user;
-        if (user && shouldHide(user.id)) return null;   // hide whole badge
+        if (user && shouldHide(user.id)) return null;
         return res;
       });
       patches.push(unpatch);
@@ -48,13 +41,13 @@ export const onLoad = () => {
       console.warn("[HideGuildTags] GuildTag component not found");
     }
 
-    /* ---------- 2. Username text (contains guildTag prop) ---------- */
-    const UsernameMod = findByProps("Username");
-    if (UsernameMod?.Username) {
-      const unpatch = patch(UsernameMod, "Username", (args, res) => {
+    /* --------------------- 2. Username text ---------------------- */
+    const UsernameModule = findByProps("Username");
+    if (UsernameModule?.Username) {
+      const unpatch = after("Username", UsernameModule, (args, res) => {
         const user = args?.[0]?.user;
         if (res?.props?.guildTag && user && shouldHide(user.id)) {
-          delete res.props.guildTag;   // strip the prop
+          res.props.guildTag = null;  // or delete res.props.guildTag
         }
         return res;
       });
@@ -63,24 +56,24 @@ export const onLoad = () => {
       console.warn("[HideGuildTags] Username component not found");
     }
 
-    console.log("[HideGuildTags] Plugin loaded");
+    console.log("[HideGuildTags] Loaded (Vendetta)");
   } catch (e) {
     console.error("[HideGuildTags] Load error:", e);
   }
 };
 
 /* --------------------------------------------------------------- */
-/*  onUnload – remove every patch                                 */
+/*  onUnload – clean up all patches                                */
 /* --------------------------------------------------------------- */
 export const onUnload = () => {
-  patches.forEach(fn => {
-    try { fn(); } catch {}
+  patches.forEach(unpatch => {
+    try { unpatch(); } catch {}
   });
   patches = [];
-  console.log("[HideGuildTags] Plugin unloaded");
+  console.log("[HideGuildTags] Unloaded");
 };
 
 /* --------------------------------------------------------------- */
-/*  Settings UI – exported so Revenge can show it                 */
+/*  Settings UI                                                    */
 /* --------------------------------------------------------------- */
 export const settings = Settings;
