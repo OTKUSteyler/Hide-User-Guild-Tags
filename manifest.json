@@ -1,6 +1,6 @@
 {
-    "name": "Template Plugin",
-    "description": "A plugin for use as a template.",
+    "name": "Hide Guild Tags",
+    "description": "Hides Guild Tags for user.",
     "authors": [
         {
             "name": "You!",
