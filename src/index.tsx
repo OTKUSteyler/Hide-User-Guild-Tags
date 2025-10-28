@@ -1,89 +1,55 @@
 import { before, after } from "@vendetta/patcher";
 import { findByProps } from "@vendetta/metro";
 import { storage } from "@vendetta/plugin";
-import { React } from "@vendetta/metro/common";
 import Settings from "./Settings";
 
 let patches: (() => void)[] = [];
 
-/** Checks if user should be hidden or not */
-function shouldHideUser(userId?: string): boolean {
-  if (!userId) return true;
+function shouldHide(userId?: string): boolean {
   const whitelist = storage.whitelist ?? [];
-  return !whitelist.includes(userId);
+  return userId ? !whitelist.includes(userId) : true;
 }
 
 export const onLoad = () => {
   try {
-    // Hide guild tags in user profiles
-    const UserTag = findByProps("GuildTag");
-    const GuildTagComponent = UserTag?.GuildTag;
-    if (GuildTagComponent) {
-      patches.push(
-        after("GuildTag", UserTag, (args, res: any) => {
-          const user = args?.[0]?.user;
-          if (user && !shouldHideUser(user.id)) return res;
-          return null;
-        })
-      );
+    storage.whitelist ??= [];
+
+    const GuildTagModule = findByProps("GuildTag");
+    if (GuildTagModule?.GuildTag) {
+      const unpatch = after("GuildTag", GuildTagModule, (args, res: any) => {
+        const user = args?.[0]?.user;
+        if (user && shouldHide(user.id)) return null;
+        return res;
+      });
+      patches.push(unpatch);
+    } else {
+      console.warn("[HideGuildTags] GuildTag component not found.");
     }
 
-    // Remove guild-related data from profile badges
-    const ProfileBadges = findByProps("UserProfileBadges");
-    if (ProfileBadges?.UserProfileBadges) {
-      patches.push(
-        before("UserProfileBadges", ProfileBadges, (args) => {
-          const user = args?.[0]?.user;
-          if (user && shouldHideUser(user.id) && user.guildMember) {
-            args[0].user.guildMember = null;
-          }
-        })
-      );
-    }
-
-    // Hide guild tags in member list
-    const MemberListItem = findByProps("MemberListItem");
-    if (MemberListItem?.MemberListItem) {
-      patches.push(
-        after("MemberListItem", MemberListItem, (args, res: any) => {
-          const user = args?.[0]?.user;
-          if (res && user && shouldHideUser(user.id)) {
-            if (res.props?.subtitle) res.props.subtitle = null;
-          }
-          return res;
-        })
-      );
-    }
-
-    // Hide guild tags from usernames in chat
     const MessageUsername = findByProps("Username");
     if (MessageUsername?.Username) {
-      patches.push(
-        after("Username", MessageUsername, (args, res: any) => {
-          const user = args?.[0]?.user;
-          if (res && user && shouldHideUser(user.id)) {
-            if (res.props?.guildTag) res.props.guildTag = null;
-          }
-          return res;
-        })
-      );
+      const unpatch = after("Username", MessageUsername, (args, res: any) => {
+        const user = args?.[0]?.user;
+        if (res && user && shouldHide(user.id)) {
+          if (res.props?.guildTag) res.props.guildTag = null;
+        }
+        return res;
+      });
+      patches.push(unpatch);
+    } else {
+      console.warn("[HideGuildTags] Username component not found.");
     }
 
-    if (!storage.whitelist) storage.whitelist = [];
-    console.log("[HideGuildTags] Plugin loaded successfully");
-  } catch (error) {
-    console.error("[HideGuildTags] Failed to load:", error);
+    console.log("[HideGuildTags] Loaded successfully");
+  } catch (e) {
+    console.error("[HideGuildTags] Error during load:", e);
   }
 };
 
 export const onUnload = () => {
-  for (const unpatch of patches) {
-    try {
-      unpatch();
-    } catch {}
-  }
+  for (const un of patches) try { un(); } catch {}
   patches = [];
-  console.log("[HideGuildTags] Plugin unloaded");
+  console.log("[HideGuildTags] Unloaded.");
 };
 
 export const settings = Settings;
