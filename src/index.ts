@@ -1,6 +1,6 @@
 /**
  * Hide User Guild Tags – Fixed for Vendetta
- * Properly structured plugin with correct imports and exports
+ * Robust version with proper error handling
  */
 import { after } from "@vendetta/patcher";
 import { findByProps } from "@vendetta/metro";
@@ -17,7 +17,9 @@ interface PluginStorage {
 const pluginStorage = storage as PluginStorage;
 
 // Initialize whitelist if it doesn't exist
-pluginStorage.whitelist ??= [];
+if (!pluginStorage.whitelist) {
+  pluginStorage.whitelist = [];
+}
 
 const shouldHide = (userId?: string): boolean => {
   const list: string[] = pluginStorage.whitelist ?? [];
@@ -25,66 +27,87 @@ const shouldHide = (userId?: string): boolean => {
 };
 
 /* --------------------------------------------------------------- */
-/*  Plugin Export (Standard Vendetta Structure)                    */
+/*  Main Plugin                                                     */
 /* --------------------------------------------------------------- */
-export default {
-  onLoad: () => {
-    const patches: (() => void)[] = [];
+let patches: (() => void)[] = [];
 
+export const onLoad = () => {
+  console.log("[HideGuildTags] Starting plugin...");
+  
+  try {
+    // 1. Patch GuildTag badge
     try {
-      // 1. Patch GuildTag badge
       const GuildTagModule = findByProps("GuildTag");
       if (GuildTagModule?.GuildTag) {
-        patches.push(
-          after("GuildTag", GuildTagModule, (args, res) => {
+        const unpatch = after("GuildTag", GuildTagModule, (args, res) => {
+          try {
             const user = args?.[0]?.user;
             if (user && shouldHide(user.id)) return null;
             return res;
-          })
-        );
-        console.log("[HideGuildTags] Patched GuildTag");
+          } catch (e) {
+            console.error("[HideGuildTags] GuildTag patch error:", e);
+            return res;
+          }
+        });
+        patches.push(unpatch);
+        console.log("[HideGuildTags] ✓ Patched GuildTag");
       } else {
-        console.warn("[HideGuildTags] GuildTag not found");
+        console.warn("[HideGuildTags] ⚠ GuildTag module not found");
       }
+    } catch (e) {
+      console.error("[HideGuildTags] Failed to patch GuildTag:", e);
+    }
 
-      // 2. Patch Username text
+    // 2. Patch Username text
+    try {
       const UsernameModule = findByProps("Username");
       if (UsernameModule?.Username) {
-        patches.push(
-          after("Username", UsernameModule, (args, res) => {
+        const unpatch = after("Username", UsernameModule, (args, res) => {
+          try {
             const user = args?.[0]?.user;
             if (res?.props?.guildTag && user && shouldHide(user.id)) {
               res.props.guildTag = null;
             }
             return res;
-          })
-        );
-        console.log("[HideGuildTags] Patched Username");
-      } else {
-        console.warn("[HideGuildTags] Username not found");
-      }
-
-      console.log("[HideGuildTags] Loaded successfully");
-    } catch (e) {
-      console.error("[HideGuildTags] Load error:", e);
-    }
-
-    // Return cleanup function
-    return () => {
-      try {
-        patches.forEach((unpatch, i) => {
-          try {
-            if (typeof unpatch === "function") unpatch();
           } catch (e) {
-            console.warn(`[HideGuildTags] Failed to unpatch ${i}:`, e);
+            console.error("[HideGuildTags] Username patch error:", e);
+            return res;
           }
         });
-        console.log("[HideGuildTags] Unloaded cleanly");
-      } catch (e) {
-        console.error("[HideGuildTags] Unload error (ignored):", e);
+        patches.push(unpatch);
+        console.log("[HideGuildTags] ✓ Patched Username");
+      } else {
+        console.warn("[HideGuildTags] ⚠ Username module not found");
       }
-    };
-  },
+    } catch (e) {
+      console.error("[HideGuildTags] Failed to patch Username:", e);
+    }
 
-  settings: Settings,
+    console.log("[HideGuildTags] ✓ Plugin loaded successfully");
+  } catch (e) {
+    console.error("[HideGuildTags] Critical load error:", e);
+    throw e; // Re-throw to signal load failure
+  }
 };
+
+export const onUnload = () => {
+  console.log("[HideGuildTags] Unloading plugin...");
+  
+  try {
+    patches.forEach((unpatch, i) => {
+      try {
+        if (typeof unpatch === "function") {
+          unpatch();
+        }
+      } catch (e) {
+        console.warn(`[HideGuildTags] Failed to unpatch ${i}:`, e);
+      }
+    });
+    patches = [];
+    console.log("[HideGuildTags] ✓ Plugin unloaded cleanly");
+  } catch (e) {
+    console.error("[HideGuildTags] Unload error:", e);
+  }
+};
+
+export { Settings as settings };
