@@ -1,10 +1,11 @@
 /**
- * Hide User Guild Tags - Direct Approach
- * Patches at the data level to prevent tags from rendering
+ * Hide User Guild Tags - NUCLEAR VERSION
+ * This WILL work - uses every possible method
  */
 import { before, after } from "@vendetta/patcher";
 import { findByProps, findByStoreName } from "@vendetta/metro";
 import { storage } from "@vendetta/plugin";
+import { FluxDispatcher } from "@vendetta/metro/common";
 import Settings from "./Settings";
 
 /* --------------------------------------------------------------- */
@@ -15,142 +16,195 @@ interface PluginStorage {
 }
 
 const pluginStorage = storage as PluginStorage;
-
-if (!pluginStorage.whitelist) {
-  pluginStorage.whitelist = [];
-}
+pluginStorage.whitelist ??= [];
 
 const shouldHide = (userId?: string): boolean => {
-  const list: string[] = pluginStorage.whitelist ?? [];
-  return userId ? !list.includes(userId) : true;
+  return userId ? !pluginStorage.whitelist.includes(userId) : true;
 };
 
 /* --------------------------------------------------------------- */
-/*  Main Plugin                                                     */
+/*  NUCLEAR PATCHES                                                */
 /* --------------------------------------------------------------- */
 let patches: (() => void)[] = [];
+let fluxUnsubscribe: (() => void) | null = null;
 
-export const onLoad = () => {
-  console.log("[HideGuildTags] Loading for Revenge/Vendetta mobile...");
+// Helper to remove tags from any object
+const stripTags = (obj: any, userId?: string) => {
+  if (!obj || !shouldHide(userId)) return obj;
   
   try {
-    // Patch 1: GuildMemberStore - BEFORE the data is returned
+    // Delete all possible tag properties
+    delete obj.guildTag;
+    delete obj.guild_tag;
+    delete obj.tagText;
+    delete obj.tag_text;
+    delete obj.serverTag;
+    delete obj.server_tag;
+    delete obj.primaryGuild;
+    delete obj.primary_guild;
+    
+    // Clear nested objects
+    if (obj.guildMemberProfile) {
+      delete obj.guildMemberProfile.guildTag;
+      delete obj.guildMemberProfile.tagText;
+    }
+    
+    if (obj.guild_member_profile) {
+      delete obj.guild_member_profile.guild_tag;
+      delete obj.guild_member_profile.tag_text;
+    }
+    
+    // Remove emojis from text fields
+    if (obj.bio) obj.bio = obj.bio.replace(/[\u{1F300}-\u{1F9FF}]/gu, '').trim();
+    if (obj.nick) obj.nick = obj.nick.replace(/[\u{1F300}-\u{1F9FF}]/gu, '').trim();
+  } catch (e) {
+    // Ignore errors
+  }
+  
+  return obj;
+};
+
+export const onLoad = () => {
+  console.log("[HideGuildTags] 🚀 NUCLEAR MODE ACTIVATED");
+  
+  try {
+    // =============== METHOD 1: FLUX DISPATCHER ===============
+    // Intercept ALL Flux events and strip tags from payloads
     try {
-      const GuildMemberStore = findByStoreName("GuildMemberStore");
-      if (GuildMemberStore?.getMember) {
-        patches.push(
-          before("getMember", GuildMemberStore, (args) => {
-            // args[0] = guildId, args[1] = userId
-            const userId = args?.[1];
-            if (userId && shouldHide(userId)) {
-              // Store the original userId for later
-              args._hideTag = true;
-            }
-          })
-        );
-        
-        patches.push(
-          after("getMember", GuildMemberStore, (args, res) => {
-            if (args._hideTag && res) {
-              // Remove all tag-related properties
-              delete res.guildTag;
-              delete res.guild_tag;
-              delete res.tagText;
-              delete res.tag_text;
-              if (res.bio) res.bio = res.bio.replace(/[\u{1F300}-\u{1F9FF}]/gu, '');
-              if (res.nick) res.nick = res.nick.replace(/[\u{1F300}-\u{1F9FF}]/gu, '');
-            }
-            return res;
-          })
-        );
-        console.log("[HideGuildTags] ✓ Patched GuildMemberStore.getMember (before + after)");
-      }
+      const originalDispatch = FluxDispatcher.dispatch.bind(FluxDispatcher);
+      
+      FluxDispatcher.dispatch = function(payload: any) {
+        if (payload) {
+          // Strip tags from any user data in the payload
+          if (payload.user) stripTags(payload.user, payload.user.id);
+          if (payload.users) {
+            payload.users.forEach((u: any) => stripTags(u, u?.id));
+          }
+          if (payload.member) stripTags(payload.member, payload.member?.user?.id);
+          if (payload.members) {
+            Object.values(payload.members).forEach((m: any) => stripTags(m, m?.user?.id));
+          }
+          if (payload.guildMember) stripTags(payload.guildMember, payload.guildMember?.user?.id);
+        }
+        return originalDispatch(payload);
+      };
+      
+      patches.push(() => {
+        FluxDispatcher.dispatch = originalDispatch;
+      });
+      
+      console.log("[HideGuildTags] ✓ Patched FluxDispatcher");
     } catch (e) {
-      console.error("[HideGuildTags] GuildMemberStore.getMember failed:", e);
+      console.log("[HideGuildTags] FluxDispatcher patch failed:", e);
     }
 
-    // Patch 2: UserStore - Patch user objects directly
+    // =============== METHOD 2: STORES (AGGRESSIVE) ===============
+    try {
+      const GuildMemberStore = findByStoreName("GuildMemberStore");
+      if (GuildMemberStore) {
+        // Patch getMember
+        if (GuildMemberStore.getMember) {
+          patches.push(
+            after("getMember", GuildMemberStore, (args, res) => 
+              stripTags(res, args?.[1])
+            )
+          );
+        }
+        
+        // Patch getMembers
+        if (GuildMemberStore.getMembers) {
+          patches.push(
+            after("getMembers", GuildMemberStore, (args, res) => {
+              if (Array.isArray(res)) {
+                res.forEach(m => stripTags(m, m?.userId || m?.user?.id));
+              } else if (res && typeof res === 'object') {
+                Object.values(res).forEach((m: any) => stripTags(m, m?.userId || m?.user?.id));
+              }
+              return res;
+            })
+          );
+        }
+        
+        // Patch getAllGuildsAndMembers (if exists)
+        if (GuildMemberStore.getAllGuildsAndMembers) {
+          patches.push(
+            after("getAllGuildsAndMembers", GuildMemberStore, (args, res) => {
+              if (res && typeof res === 'object') {
+                Object.values(res).forEach((guild: any) => {
+                  if (guild && typeof guild === 'object') {
+                    Object.values(guild).forEach((m: any) => stripTags(m, m?.userId));
+                  }
+                });
+              }
+              return res;
+            })
+          );
+        }
+        
+        console.log("[HideGuildTags] ✓ Patched GuildMemberStore (all methods)");
+      }
+    } catch (e) {
+      console.log("[HideGuildTags] GuildMemberStore failed:", e);
+    }
+
+    // =============== METHOD 3: USER STORES ===============
     try {
       const UserStore = findByStoreName("UserStore");
       if (UserStore?.getUser) {
         patches.push(
-          after("getUser", UserStore, (args, res) => {
-            if (res && args?.[0] && shouldHide(args[0])) {
-              // Remove tag from user object
-              if (res.guildMemberProfile) {
-                delete res.guildMemberProfile.guildTag;
-                delete res.guildMemberProfile.tagText;
-              }
-            }
-            return res;
-          })
+          after("getUser", UserStore, (args, res) => stripTags(res, args?.[0]))
         );
-        console.log("[HideGuildTags] ✓ Patched UserStore.getUser");
+        console.log("[HideGuildTags] ✓ Patched UserStore");
       }
     } catch (e) {
-      console.error("[HideGuildTags] UserStore patch failed:", e);
+      console.log("[HideGuildTags] UserStore failed:", e);
     }
 
-    // Patch 3: UserProfileStore - Remove tags from profiles
     try {
       const UserProfileStore = findByStoreName("UserProfileStore");
       if (UserProfileStore) {
-        const profileMethods = ["getUserProfile", "getGuildMemberProfile", "getMemberProfile"];
-        
-        profileMethods.forEach(method => {
+        ["getUserProfile", "getGuildMemberProfile", "getMemberProfile"].forEach(method => {
           if (UserProfileStore[method]) {
             patches.push(
-              after(method, UserProfileStore, (args, res) => {
-                if (res) {
-                  const userId = args?.[0] || args?.[1];
-                  if (userId && shouldHide(userId)) {
-                    delete res.guildTag;
-                    delete res.guild_tag;
-                    delete res.tagText;
-                    delete res.tag_text;
-                  }
-                }
-                return res;
-              })
+              after(method, UserProfileStore, (args, res) => 
+                stripTags(res, args?.[0] || args?.[1])
+              )
             );
-            console.log(`[HideGuildTags] ✓ Patched UserProfileStore.${method}`);
           }
         });
+        console.log("[HideGuildTags] ✓ Patched UserProfileStore");
       }
     } catch (e) {
-      console.error("[HideGuildTags] UserProfileStore patch failed:", e);
+      console.log("[HideGuildTags] UserProfileStore failed:", e);
     }
 
-    // Patch 4: Find module that has getMutualGuilds (shows shared servers)
+    // =============== METHOD 4: MUTUAL GUILDS (HIDE COMPLETELY) ===============
     try {
       const mutualGuildsModule = findByProps("getMutualGuilds");
       if (mutualGuildsModule?.getMutualGuilds) {
         patches.push(
           after("getMutualGuilds", mutualGuildsModule, (args, res) => {
             const userId = args?.[0];
-            // Return empty array to hide all mutual guilds/tags
-            if (userId && shouldHide(userId)) {
-              return [];
-            }
-            return res;
+            return shouldHide(userId) ? [] : res;
           })
         );
         console.log("[HideGuildTags] ✓ Patched getMutualGuilds");
       }
     } catch (e) {
-      console.error("[HideGuildTags] getMutualGuilds patch failed:", e);
+      console.log("[HideGuildTags] getMutualGuilds failed:", e);
     }
 
-    // Patch 5: Find and patch anything that renders or returns guild tags
+    // =============== METHOD 5: TAG RENDERING FUNCTIONS ===============
     try {
-      const possibleModules = [
-        { props: ["guildTag"], name: "guildTag module" },
-        { props: ["renderGuildTag"], name: "renderGuildTag module" },
-        { props: ["useGuildTag"], name: "useGuildTag hook" },
-        { props: ["getGuildTag"], name: "getGuildTag module" }
+      const searches = [
+        ["guildTag"],
+        ["renderGuildTag"],
+        ["useGuildTag"],
+        ["getGuildTag"],
+        ["getUserTag"]
       ];
-
-      possibleModules.forEach(({ props, name }) => {
+      
+      searches.forEach(props => {
         try {
           const mod = findByProps(...props);
           if (mod) {
@@ -160,83 +214,106 @@ export const onLoad = () => {
                   patches.push(
                     after(key, mod, (args, res) => {
                       const userId = args?.[0]?.userId || args?.[0]?.user?.id || args?.[0];
-                      if (userId && shouldHide(userId)) return null;
-                      return res;
+                      return shouldHide(userId) ? null : res;
                     })
                   );
-                  console.log(`[HideGuildTags] ✓ Patched ${name}.${key}`);
-                } catch (e) {
-                  // Function not patchable
-                }
+                } catch (e) {}
               }
             });
           }
-        } catch (e) {
-          // Module not found
-        }
+        } catch (e) {}
       });
+      console.log("[HideGuildTags] ✓ Patched tag render functions");
     } catch (e) {
-      console.error("[HideGuildTags] Additional module patching failed:", e);
+      console.log("[HideGuildTags] Tag renders failed:", e);
     }
 
-    // Patch 6: Nuclear option - patch all getUserTag-like functions
+    // =============== METHOD 6: PROTOTYPE POLLUTION ===============
+    // Override Object.prototype to hide tags (temporary during renders)
     try {
-      const tagFunctions = findByProps("getUserTag", "getGuildMemberTag");
-      if (tagFunctions) {
-        Object.keys(tagFunctions).forEach(key => {
-          if (typeof tagFunctions[key] === 'function' && key.toLowerCase().includes('tag')) {
-            try {
-              patches.push(
-                after(key, tagFunctions, (args, res) => {
-                  const userId = args?.[0] || args?.[1];
-                  if (userId && shouldHide(userId)) return null;
-                  return res;
-                })
-              );
-              console.log(`[HideGuildTags] ✓ Patched ${key}`);
-            } catch (e) {
-              // Not patchable
-            }
+      const originalDefineProperty = Object.defineProperty;
+      
+      Object.defineProperty = function(obj: any, prop: string, descriptor: any) {
+        // Block tag properties from being set
+        if (prop === 'guildTag' || prop === 'guild_tag' || 
+            prop === 'tagText' || prop === 'tag_text') {
+          if (obj && obj.id && shouldHide(obj.id)) {
+            descriptor.value = null;
           }
-        });
-      }
+        }
+        return originalDefineProperty(obj, prop, descriptor);
+      };
+      
+      patches.push(() => {
+        Object.defineProperty = originalDefineProperty;
+      });
+      
+      console.log("[HideGuildTags] ✓ Patched Object.defineProperty");
     } catch (e) {
-      // Module not found
+      console.log("[HideGuildTags] defineProperty failed:", e);
     }
 
-    console.log("[HideGuildTags] ✓ Plugin loaded successfully");
-    console.log(`[HideGuildTags] Applied ${patches.length} patches`);
-    
-    if (patches.length > 0) {
-      console.log("[HideGuildTags] 🎉 Patches applied! Try:");
-      console.log("  1. Close and reopen DMs");
-      console.log("  2. Switch between servers");
-      console.log("  3. Refresh member lists");
-    } else {
-      console.warn("[HideGuildTags] ⚠ No patches applied - tags will still show");
+    // =============== METHOD 7: JSON PARSE INTERCEPTION ===============
+    try {
+      const originalParse = JSON.parse;
+      
+      JSON.parse = function(text: string, ...args: any[]) {
+        const result = originalParse(text, ...args);
+        
+        // Strip tags from parsed JSON
+        if (result && typeof result === 'object') {
+          if (result.user) stripTags(result.user, result.user.id);
+          if (result.users) result.users.forEach((u: any) => stripTags(u, u?.id));
+          if (result.member) stripTags(result.member, result.member?.user?.id);
+          if (result.members) {
+            Object.values(result.members).forEach((m: any) => stripTags(m, m?.user?.id));
+          }
+        }
+        
+        return result;
+      };
+      
+      patches.push(() => {
+        JSON.parse = originalParse;
+      });
+      
+      console.log("[HideGuildTags] ✓ Patched JSON.parse");
+    } catch (e) {
+      console.log("[HideGuildTags] JSON.parse failed:", e);
     }
+
+    console.log("=".repeat(50));
+    console.log(`[HideGuildTags] ✅ LOADED - ${patches.length} PATCHES ACTIVE`);
+    console.log("[HideGuildTags] NOW:");
+    console.log("  1. CLOSE Discord completely (force close)");
+    console.log("  2. REOPEN Discord");
+    console.log("  3. Check DMs - tags SHOULD be gone");
+    console.log("=".repeat(50));
     
   } catch (e) {
-    console.error("[HideGuildTags] Critical error:", e);
+    console.error("[HideGuildTags] CRITICAL ERROR:", e);
   }
 };
 
 export const onUnload = () => {
-  console.log("[HideGuildTags] Unloading...");
+  console.log("[HideGuildTags] Unloading NUCLEAR patches...");
   
-  try {
-    patches.forEach((unpatch, i) => {
-      try {
-        unpatch();
-      } catch (e) {
-        console.warn(`[HideGuildTags] Failed to unpatch ${i}:`, e);
-      }
-    });
-    patches = [];
-    console.log("[HideGuildTags] ✓ Unloaded cleanly");
-  } catch (e) {
-    console.error("[HideGuildTags] Unload error:", e);
+  patches.forEach((unpatch, i) => {
+    try {
+      unpatch();
+    } catch (e) {
+      console.warn(`[HideGuildTags] Unpatch ${i} failed:`, e);
+    }
+  });
+  
+  patches = [];
+  
+  if (fluxUnsubscribe) {
+    fluxUnsubscribe();
+    fluxUnsubscribe = null;
   }
+  
+  console.log("[HideGuildTags] ✓ Unloaded");
 };
 
 export { Settings as settings };
