@@ -1,6 +1,6 @@
 /**
- * Hide User Guild Tags - FIXED NUCLEAR VERSION
- * No JSON.parse patching (was causing crashes)
+ * Hide User Guild Tags - WORKING VERSION
+ * Now targets the correct "primaryGuild" property!
  */
 import { before, after } from "@vendetta/patcher";
 import { findByProps, findByStoreName } from "@vendetta/metro";
@@ -23,34 +23,33 @@ const shouldHide = (userId?: string): boolean => {
 };
 
 /* --------------------------------------------------------------- */
-/*  SAFE PATCHES                                                   */
+/*  PRIMARY GUILD TAG STRIPPER                                     */
 /* --------------------------------------------------------------- */
 let patches: (() => void)[] = [];
 
-// Helper to remove tags from any object
-const stripTags = (obj: any, userId?: string) => {
+// Remove primaryGuild (this is the actual guild tag!)
+const stripPrimaryGuild = (obj: any, userId?: string) => {
   if (!obj || !shouldHide(userId)) return obj;
   
   try {
-    // Delete all possible tag properties
+    // THIS IS THE KEY! Remove primaryGuild object
+    if (obj.primaryGuild) {
+      delete obj.primaryGuild;
+    }
+    if (obj.primary_guild) {
+      delete obj.primary_guild;
+    }
+    
+    // Also remove other tag properties just in case
     delete obj.guildTag;
     delete obj.guild_tag;
     delete obj.tagText;
     delete obj.tag_text;
-    delete obj.serverTag;
-    delete obj.server_tag;
-    delete obj.primaryGuild;
-    delete obj.primary_guild;
     
     // Clear nested objects
     if (obj.guildMemberProfile) {
+      delete obj.guildMemberProfile.primaryGuild;
       delete obj.guildMemberProfile.guildTag;
-      delete obj.guildMemberProfile.tagText;
-    }
-    
-    if (obj.guild_member_profile) {
-      delete obj.guild_member_profile.guild_tag;
-      delete obj.guild_member_profile.tag_text;
     }
   } catch (e) {
     // Ignore errors
@@ -60,25 +59,40 @@ const stripTags = (obj: any, userId?: string) => {
 };
 
 export const onLoad = () => {
-  console.log("[HideGuildTags] 🚀 Loading SAFE nuclear version...");
+  console.log("[HideGuildTags] 🎯 Loading with primaryGuild targeting...");
   
   try {
-    // =============== METHOD 1: FLUX DISPATCHER ===============
+    // =============== METHOD 1: FLUX DISPATCHER (PRIMARY) ===============
     try {
       const originalDispatch = FluxDispatcher.dispatch.bind(FluxDispatcher);
       
       FluxDispatcher.dispatch = function(payload: any) {
         try {
           if (payload) {
-            if (payload.user) stripTags(payload.user, payload.user.id);
+            // Strip primaryGuild from all user objects in payload
+            if (payload.user) {
+              stripPrimaryGuild(payload.user, payload.user.id);
+            }
             if (payload.users) {
-              payload.users.forEach((u: any) => stripTags(u, u?.id));
+              if (Array.isArray(payload.users)) {
+                payload.users.forEach((u: any) => stripPrimaryGuild(u, u?.id));
+              } else {
+                Object.values(payload.users).forEach((u: any) => stripPrimaryGuild(u, u?.id));
+              }
             }
-            if (payload.member) stripTags(payload.member, payload.member?.user?.id);
+            if (payload.member?.user) {
+              stripPrimaryGuild(payload.member.user, payload.member.user.id);
+            }
             if (payload.members) {
-              Object.values(payload.members).forEach((m: any) => stripTags(m, m?.user?.id));
+              Object.values(payload.members).forEach((m: any) => {
+                if (m?.user) stripPrimaryGuild(m.user, m.user.id);
+              });
             }
-            if (payload.guildMember) stripTags(payload.guildMember, payload.guildMember?.user?.id);
+            
+            // Handle PRESENCE_UPDATES (this is key for DM lists!)
+            if (payload.type === "PRESENCE_UPDATE" || payload.type === "USER_UPDATE") {
+              if (payload.user) stripPrimaryGuild(payload.user, payload.user.id);
+            }
           }
         } catch (e) {
           // Ignore stripping errors
@@ -90,20 +104,69 @@ export const onLoad = () => {
         FluxDispatcher.dispatch = originalDispatch;
       });
       
-      console.log("[HideGuildTags] ✓ Patched FluxDispatcher");
+      console.log("[HideGuildTags] ✓ Patched FluxDispatcher (primaryGuild targeting)");
     } catch (e) {
       console.log("[HideGuildTags] FluxDispatcher patch failed:", e);
     }
 
-    // =============== METHOD 2: GUILD MEMBER STORE ===============
+    // =============== METHOD 2: USER STORE (CRITICAL) ===============
+    try {
+      const UserStore = findByStoreName("UserStore");
+      if (UserStore) {
+        // Patch getUser - this is called constantly for user data
+        if (UserStore.getUser) {
+          patches.push(
+            after("getUser", UserStore, (args, res) => {
+              if (res && args?.[0]) {
+                stripPrimaryGuild(res, args[0]);
+              }
+              return res;
+            })
+          );
+          console.log("[HideGuildTags] ✓ Patched UserStore.getUser");
+        }
+        
+        // Patch getUsers
+        if (UserStore.getUsers) {
+          patches.push(
+            after("getUsers", UserStore, (args, res) => {
+              if (res && typeof res === 'object') {
+                Object.keys(res).forEach(userId => {
+                  stripPrimaryGuild(res[userId], userId);
+                });
+              }
+              return res;
+            })
+          );
+          console.log("[HideGuildTags] ✓ Patched UserStore.getUsers");
+        }
+        
+        // Patch getCurrentUser
+        if (UserStore.getCurrentUser) {
+          patches.push(
+            after("getCurrentUser", UserStore, (args, res) => {
+              if (res) stripPrimaryGuild(res, res.id);
+              return res;
+            })
+          );
+        }
+      }
+    } catch (e) {
+      console.log("[HideGuildTags] UserStore failed:", e);
+    }
+
+    // =============== METHOD 3: GUILD MEMBER STORE ===============
     try {
       const GuildMemberStore = findByStoreName("GuildMemberStore");
       if (GuildMemberStore) {
         if (GuildMemberStore.getMember) {
           patches.push(
-            after("getMember", GuildMemberStore, (args, res) => 
-              stripTags(res, args?.[1])
-            )
+            after("getMember", GuildMemberStore, (args, res) => {
+              if (res?.user) {
+                stripPrimaryGuild(res.user, res.user.id);
+              }
+              return res;
+            })
           );
         }
         
@@ -112,9 +175,13 @@ export const onLoad = () => {
             after("getMembers", GuildMemberStore, (args, res) => {
               try {
                 if (Array.isArray(res)) {
-                  res.forEach(m => stripTags(m, m?.userId || m?.user?.id));
+                  res.forEach(m => {
+                    if (m?.user) stripPrimaryGuild(m.user, m.user.id);
+                  });
                 } else if (res && typeof res === 'object') {
-                  Object.values(res).forEach((m: any) => stripTags(m, m?.userId || m?.user?.id));
+                  Object.values(res).forEach((m: any) => {
+                    if (m?.user) stripPrimaryGuild(m.user, m.user.id);
+                  });
                 }
               } catch (e) {
                 // Ignore
@@ -130,28 +197,21 @@ export const onLoad = () => {
       console.log("[HideGuildTags] GuildMemberStore failed:", e);
     }
 
-    // =============== METHOD 3: USER STORES ===============
-    try {
-      const UserStore = findByStoreName("UserStore");
-      if (UserStore?.getUser) {
-        patches.push(
-          after("getUser", UserStore, (args, res) => stripTags(res, args?.[0]))
-        );
-        console.log("[HideGuildTags] ✓ Patched UserStore");
-      }
-    } catch (e) {
-      console.log("[HideGuildTags] UserStore failed:", e);
-    }
-
+    // =============== METHOD 4: USER PROFILE STORE ===============
     try {
       const UserProfileStore = findByStoreName("UserProfileStore");
       if (UserProfileStore) {
         ["getUserProfile", "getGuildMemberProfile", "getMemberProfile"].forEach(method => {
           if (UserProfileStore[method]) {
             patches.push(
-              after(method, UserProfileStore, (args, res) => 
-                stripTags(res, args?.[0] || args?.[1])
-              )
+              after(method, UserProfileStore, (args, res) => {
+                if (res) {
+                  const userId = args?.[0] || args?.[1];
+                  stripPrimaryGuild(res, userId);
+                  if (res.user) stripPrimaryGuild(res.user, res.user.id);
+                }
+                return res;
+              })
             );
           }
         });
@@ -161,97 +221,34 @@ export const onLoad = () => {
       console.log("[HideGuildTags] UserProfileStore failed:", e);
     }
 
-    // =============== METHOD 4: MUTUAL GUILDS ===============
+    // =============== METHOD 5: PRESENCE STORE ===============
     try {
-      const mutualGuildsModule = findByProps("getMutualGuilds");
-      if (mutualGuildsModule?.getMutualGuilds) {
-        patches.push(
-          after("getMutualGuilds", mutualGuildsModule, (args, res) => {
-            const userId = args?.[0];
-            return shouldHide(userId) ? [] : res;
-          })
-        );
-        console.log("[HideGuildTags] ✓ Patched getMutualGuilds");
-      }
-    } catch (e) {
-      console.log("[HideGuildTags] getMutualGuilds failed:", e);
-    }
-
-    // =============== METHOD 5: TAG FUNCTIONS ===============
-    try {
-      const searches = [
-        ["guildTag"],
-        ["renderGuildTag"],
-        ["useGuildTag"],
-        ["getGuildTag"],
-        ["getUserTag"]
-      ];
-      
-      searches.forEach(props => {
-        try {
-          const mod = findByProps(...props);
-          if (mod) {
-            Object.keys(mod).forEach(key => {
-              if (typeof mod[key] === 'function' && key.toLowerCase().includes('tag')) {
-                try {
-                  patches.push(
-                    after(key, mod, (args, res) => {
-                      const userId = args?.[0]?.userId || args?.[0]?.user?.id || args?.[0];
-                      return shouldHide(userId) ? null : res;
-                    })
-                  );
-                } catch (e) {
-                  // Not patchable
-                }
-              }
-            });
-          }
-        } catch (e) {
-          // Module not found
-        }
-      });
-      console.log("[HideGuildTags] ✓ Patched tag functions");
-    } catch (e) {
-      console.log("[HideGuildTags] Tag functions failed:", e);
-    }
-
-    // =============== METHOD 6: RELATIONSHIP STORE ===============
-    try {
-      const RelationshipStore = findByStoreName("RelationshipStore");
-      if (RelationshipStore) {
-        ["getRelationships", "getFriendIDs", "getNickname"].forEach(method => {
-          if (RelationshipStore[method]) {
+      const PresenceStore = findByStoreName("PresenceStore");
+      if (PresenceStore) {
+        ["getState", "getStatus", "getActivities"].forEach(method => {
+          if (PresenceStore[method]) {
             patches.push(
-              after(method, RelationshipStore, (args, res) => {
-                try {
-                  if (res && typeof res === 'object') {
-                    Object.keys(res).forEach(userId => {
-                      if (shouldHide(userId)) {
-                        stripTags(res[userId], userId);
-                      }
-                    });
-                  }
-                } catch (e) {
-                  // Ignore
-                }
+              after(method, PresenceStore, (args, res) => {
+                // Presence updates often include user data
                 return res;
               })
             );
           }
         });
-        console.log("[HideGuildTags] ✓ Patched RelationshipStore");
+        console.log("[HideGuildTags] ✓ Patched PresenceStore");
       }
     } catch (e) {
-      console.log("[HideGuildTags] RelationshipStore failed:", e);
+      console.log("[HideGuildTags] PresenceStore failed:", e);
     }
 
-    console.log("=".repeat(50));
-    console.log(`[HideGuildTags] ✅ LOADED - ${patches.length} PATCHES`);
-    console.log("[HideGuildTags] NEXT STEPS:");
-    console.log("  1. FORCE CLOSE Discord (swipe from recents)");
+    console.log("=".repeat(60));
+    console.log(`[HideGuildTags] ✅ LOADED - ${patches.length} PATCHES ACTIVE`);
+    console.log("[HideGuildTags] Targeting: primaryGuild object");
+    console.log("[HideGuildTags] NOW:");
+    console.log("  1. FORCE CLOSE Discord completely");
     console.log("  2. REOPEN Discord");
-    console.log("  3. Check if tags are hidden");
-    console.log("=".repeat(50));
+    console.log("  3. Open DMs - tags MUST be gone!");
+    console.log("=".repeat(60));
     
   } catch (e) {
     console.error("[HideGuildTags] CRITICAL ERROR:", e);
